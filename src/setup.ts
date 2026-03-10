@@ -162,8 +162,8 @@ function setupClaudeDesktop(cmd: ReturnType<typeof getMemordCommand>): SetupResu
 }
 
 function setupClaudeCode(cmd: ReturnType<typeof getMemordCommand>): SetupResult {
-  // Claude Code uses ~/.claude/settings.json
-  const path = join(HOME, '.claude', 'settings.json');
+  // Claude Code user-scope MCP config lives in ~/.claude.json (not ~/.claude/settings.json)
+  const path = join(HOME, '.claude.json');
   if (!dirExists(join(HOME, '.claude'))) {
     return { tool: 'Claude Code', path, status: 'skipped', message: 'Not installed' };
   }
@@ -352,6 +352,108 @@ function setupAugment(cmd: ReturnType<typeof getMemordCommand>): SetupResult {
   return injectMcpServers(path, cmd, 'Augment Code', true);
 }
 
+function setupAntigravity(cmd: ReturnType<typeof getMemordCommand>): SetupResult {
+  const path = join(HOME, '.gemini', 'antigravity', 'mcp_config.json');
+  return injectMcpServers(path, cmd, 'Antigravity', true);
+}
+
+function setupAmp(cmd: ReturnType<typeof getMemordCommand>): SetupResult {
+  const base = IS_WIN ? join(APPDATA, 'Code') : IS_MAC
+    ? join(HOME, 'Library', 'Application Support', 'Code')
+    : join(HOME, '.config', 'Code');
+  const path = join(base, 'User', 'settings.json');
+  if (!dirExists(join(base, 'User'))) {
+    return { tool: 'Amp', path, status: 'skipped', message: 'Not installed' };
+  }
+  try {
+    const config = readJson(path);
+    const servers = (config['amp.mcpServers'] as Record<string, unknown>) ?? {};
+    const existing = servers['memord'] as Record<string, unknown> | undefined;
+    if (existing) {
+      const existingArgs = existing.args as string[] | undefined;
+      if (JSON.stringify(existingArgs) === JSON.stringify(cmd.args)) {
+        return { tool: 'Amp', path, status: 'already_set', message: 'Already configured' };
+      }
+      servers['memord'] = mcpEntry(cmd);
+      writeJson(path, { ...config, 'amp.mcpServers': servers });
+      return { tool: 'Amp', path, status: 'configured', message: 'Updated config — restart the tool' };
+    }
+    servers['memord'] = mcpEntry(cmd);
+    writeJson(path, { ...config, 'amp.mcpServers': servers });
+    return { tool: 'Amp', path, status: 'configured', message: 'Configured — restart the tool' };
+  } catch (e) {
+    return { tool: 'Amp', path, status: 'error', message: String(e) };
+  }
+}
+
+function setup5ire(cmd: ReturnType<typeof getMemordCommand>): SetupResult {
+  const path = IS_WIN
+    ? join(APPDATA, '5ire', 'mcp.json')
+    : IS_MAC
+    ? join(HOME, 'Library', 'Application Support', '5ire', 'mcp.json')
+    : join(HOME, '.config', '5ire', 'mcp.json');
+  return injectMcpServers(path, cmd, '5ire', true);
+}
+
+function setupLmStudio(cmd: ReturnType<typeof getMemordCommand>): SetupResult {
+  const path = IS_WIN
+    ? join(HOME, '.lmstudio', 'mcp.json')
+    : join(HOME, '.lmstudio', 'mcp.json');
+  return injectMcpServers(path, cmd, 'LM Studio', true);
+}
+
+function setupCherryStudio(cmd: ReturnType<typeof getMemordCommand>): SetupResult {
+  const path = IS_WIN
+    ? join(APPDATA, 'CherryStudio', 'mcp_settings.json')
+    : IS_MAC
+    ? join(HOME, 'Library', 'Application Support', 'CherryStudio', 'mcp_settings.json')
+    : join(HOME, '.config', 'CherryStudio', 'mcp_settings.json');
+  return injectMcpServers(path, cmd, 'Cherry Studio', true);
+}
+
+function setupGithubCopilot(cmd: ReturnType<typeof getMemordCommand>): SetupResult {
+  const path = IS_WIN
+    ? join(APPDATA, 'Code', 'User', 'mcp.json')
+    : IS_MAC
+    ? join(HOME, 'Library', 'Application Support', 'Code', 'User', 'mcp.json')
+    : join(HOME, '.config', 'Code', 'User', 'mcp.json');
+  return injectVsCodeServers(path, cmd, 'GitHub Copilot', true);
+}
+
+function setupKiro(cmd: ReturnType<typeof getMemordCommand>): SetupResult {
+  const path = join(HOME, '.kiro', 'settings', 'mcp.json');
+  return injectMcpServers(path, cmd, 'Kiro', true);
+}
+
+function setupGeminiCodeAssist(cmd: ReturnType<typeof getMemordCommand>): SetupResult {
+  const base = IS_WIN ? join(APPDATA, 'Code') : IS_MAC
+    ? join(HOME, 'Library', 'Application Support', 'Code')
+    : join(HOME, '.config', 'Code');
+  const path = join(base, 'User', 'settings.json');
+  if (!dirExists(join(base, 'User'))) {
+    return { tool: 'Gemini Code Assist', path, status: 'skipped', message: 'Not installed' };
+  }
+  try {
+    const config = readJson(path);
+    const servers = (config['geminicodeassist.mcpServers'] as Record<string, unknown>) ?? {};
+    const existing = servers['memord'] as Record<string, unknown> | undefined;
+    if (existing) {
+      const existingArgs = existing.args as string[] | undefined;
+      if (JSON.stringify(existingArgs) === JSON.stringify(cmd.args)) {
+        return { tool: 'Gemini Code Assist', path, status: 'already_set', message: 'Already configured' };
+      }
+      servers['memord'] = mcpEntry(cmd);
+      writeJson(path, { ...config, 'geminicodeassist.mcpServers': servers });
+      return { tool: 'Gemini Code Assist', path, status: 'configured', message: 'Updated config — restart the tool' };
+    }
+    servers['memord'] = mcpEntry(cmd);
+    writeJson(path, { ...config, 'geminicodeassist.mcpServers': servers });
+    return { tool: 'Gemini Code Assist', path, status: 'configured', message: 'Configured — restart the tool' };
+  } catch (e) {
+    return { tool: 'Gemini Code Assist', path, status: 'error', message: String(e) };
+  }
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────
 
 export function runSetup(): void {
@@ -361,24 +463,32 @@ export function runSetup(): void {
   console.log(`Command: ${cmd.command} ${cmd.args.join(' ')}\n`);
 
   const configurators = [
-    setupClaudeDesktop,
-    setupClaudeCode,
-    setupCursor,
-    setupWindsurf,
-    setupVsCode,
-    setupVisualStudio,
-    setupCline,
-    setupRooCode,
-    setupContinue,
-    setupZed,
-    setupJetBrains,
-    setupGeminiCli,
-    setupCodexCli,
+    setup5ire,
     setupAmazonQ,
-    setupGoose,
-    setupNeovim,
-    setupWarp,
+    setupAmp,
+    setupAntigravity,
     setupAugment,
+    setupCherryStudio,
+    setupClaudeCode,
+    setupClaudeDesktop,
+    setupCline,
+    setupCodexCli,
+    setupContinue,
+    setupCursor,
+    setupGeminiCli,
+    setupGeminiCodeAssist,
+    setupGithubCopilot,
+    setupGoose,
+    setupJetBrains,
+    setupKiro,
+    setupLmStudio,
+    setupNeovim,
+    setupRooCode,
+    setupVisualStudio,
+    setupVsCode,
+    setupWarp,
+    setupWindsurf,
+    setupZed,
   ];
 
   const results = configurators.map(fn => fn(cmd));
