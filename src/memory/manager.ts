@@ -19,11 +19,48 @@ const TOPIC_PATTERNS: Array<[RegExp, string]> = [
   [/\b(supabase|postgres|mysql|sqlite|mongodb|redis|database|db)\b/i, 'data_layer'],
 ];
 
+// Returns up to 3 matching topics (QW-4: multi-topic tagging)
+function inferAllTopics(content: string): string[] {
+  const topics = TOPIC_PATTERNS
+    .filter(([pattern]) => pattern.test(content))
+    .map(([, topic]) => topic);
+  return topics.length > 0 ? topics.slice(0, 3) : ['general'];
+}
+
 function inferTopic(content: string): string {
-  for (const [pattern, topic] of TOPIC_PATTERNS) {
-    if (pattern.test(content)) return topic;
-  }
-  return 'general';
+  return inferAllTopics(content)[0];
+}
+
+// Known tech/tool names for semantic keyword extraction (M-1)
+const TECH_NAMES = new Set([
+  'typescript', 'javascript', 'python', 'rust', 'golang', 'java', 'kotlin', 'swift',
+  'react', 'vue', 'svelte', 'angular', 'nextjs', 'nuxt', 'astro', 'remix',
+  'node', 'nodejs', 'bun', 'deno', 'express', 'fastify', 'hono', 'nest',
+  'supabase', 'postgres', 'postgresql', 'sqlite', 'mongodb', 'redis', 'mysql', 'prisma', 'drizzle',
+  'tailwind', 'vercel', 'netlify', 'cloudflare', 'aws', 'gcp', 'azure',
+  'docker', 'kubernetes', 'github', 'gitlab', 'linear', 'notion',
+  'openai', 'anthropic', 'claude', 'cursor', 'windsurf', 'copilot',
+  'graphql', 'trpc', 'mcp', 'vite', 'webpack', 'electron', 'tauri', 'expo',
+  'zod', 'eslint', 'prettier', 'vitest', 'jest',
+]);
+
+const STOP_WORDS = new Set([
+  'the','a','an','is','are','was','were','be','been','have','has','had',
+  'do','does','did','will','would','could','should','may','might','can',
+  'to','of','in','on','at','by','for','with','about','and','but','or',
+  'not','this','that','it','its','he','she','they','we','i','me','my',
+  'you','your','what','which','who','when','where','how','all','some','no',
+  'also','use','uses','used','want','wants','like','likes','know','make',
+  'just','very','too','only','same','both','more','most','such','then',
+]);
+
+function extractKeywords(content: string): string[] {
+  const lower = content.toLowerCase().replace(/[^a-z0-9\s]/g, ' ');
+  const techMatches = [...TECH_NAMES].filter(t => lower.includes(t));
+  const words = lower
+    .split(/\s+/)
+    .filter(w => w.length >= 4 && !STOP_WORDS.has(w) && !techMatches.includes(w));
+  return [...new Set([...techMatches, ...words])].slice(0, 5);
 }
 
 // RRF fusion score
@@ -79,15 +116,19 @@ export class MemoryManager {
       return { memory: this.buildMemory(input), action: 'skipped' };
     }
 
-    const embedding = await embed(input.content);
+    const embedding = await embed(input.content, 'passage');
 
     // Quality gate 2: similarity dedupe — only scan top 500 most recent+important
     // to avoid an O(n) full-table scan on every insert.
     const existing = this.db.getTopCandidates(input.user_id ?? 'default', 500);
     for (const { memory, embedding: existingEmb } of existing) {
       const dist = cosineDistance(embedding, existingEmb);
-      if (dist < this.config.similarity_threshold) {
-        // Too similar — update instead of add
+      // Context-aware dedup (QW-3):
+      // dist < 0.05 → near-identical → always update
+      // dist < 0.15 + same type + same topic → related update
+      const sameType = memory.type === (input.type ?? 'episodic');
+      const sameTopic = memory.topic === (input.topic ?? inferTopic(input.content));
+      if (dist < 0.05 || (dist < 0.15 && sameType && sameTopic)) {
         const updated: Memory = { ...memory, content: input.content, last_accessed: Date.now() };
         this.db.update(memory.id, { content: input.content, last_accessed: Date.now() });
         return { memory: updated, action: 'updated' };
@@ -101,10 +142,20 @@ export class MemoryManager {
 
   private buildMemory(input: MemoryInput): Memory {
     const now = Date.now();
+    const allTopics = inferAllTopics(input.content);
+    const primaryTopic = input.topic ?? allTopics[0];
+    // Extra topics beyond the primary → auto-tags (QW-4)
+    const extraTopics = allTopics.slice(1).filter(t => t !== primaryTopic);
+    // Semantic keyword extraction (M-1)
+    const autoKeywords = extractKeywords(input.content);
+    const autoTags = [...extraTopics, ...autoKeywords];
+    const mergedTags = input.tags
+      ? [...new Set([...input.tags, ...autoTags])]
+      : autoTags.length > 0 ? autoTags : undefined;
     return {
       id: randomUUID(),
       type: (input.type ?? 'episodic') as MemoryType,
-      topic: input.topic ?? inferTopic(input.content),
+      topic: primaryTopic,
       content: input.content,
       importance: input.importance ?? 0.5,
       source: input.source ?? 'manual',
@@ -114,7 +165,7 @@ export class MemoryManager {
       ingestion_time: now,
       last_accessed: now,
       access_count: 0,
-      tags: input.tags,
+      tags: mergedTags,
       metadata: input.metadata,
     };
   }
@@ -125,7 +176,7 @@ export class MemoryManager {
     const limit = options.limit ?? 10;
     const userId = options.user_id ?? 'default';
 
-    const queryEmbedding = await embed(options.query);
+    const queryEmbedding = await embed(options.query, 'query');
 
     // FTS search
     const ftsResults = this.db.searchFts(options.query, { user_id: userId, limit: 20 });
@@ -167,8 +218,9 @@ export class MemoryManager {
       const base = rrfScore(positions);
       const memory = memoryMap.get(id)!;
       const recency = recencyScore(memory.last_accessed);
-      const importance = memory.importance;
-      const finalScore = base * 0.7 + recency * 0.2 + importance * 0.1;
+      // Boost constraint type to always score high (M-3)
+      const importanceScore = memory.type === 'constraint' ? Math.max(memory.importance, 0.8) : memory.importance;
+      const finalScore = base * 0.7 + recency * 0.2 + importanceScore * 0.1;
       return { memory, embedding: embeddingMap.get(id)!, baseScore: finalScore };
     });
 
@@ -218,25 +270,4 @@ export class MemoryManager {
     return this.db.stats(userId);
   }
 
-  // ── Smart extraction ─────────────────────────────────────────────────────
-
-  async extractAndRemember(
-    text: string,
-    options: { app?: string; user_id?: string } = {}
-  ): Promise<{ added: number; updated: number; skipped: number; method: 'ollama' | 'regex' }> {
-    const { extractSmart } = await import('../extractor/ollama.js');
-    const { memories, method } = await extractSmart(text, {
-      app: options.app,
-      user_id: options.user_id ?? this.config.user_id,
-    });
-
-    let added = 0, updated = 0, skipped = 0;
-    for (const input of memories) {
-      const result = await this.remember({ ...input, user_id: options.user_id ?? this.config.user_id });
-      if (result.action === 'added') added++;
-      else if (result.action === 'updated') updated++;
-      else skipped++;
-    }
-    return { added, updated, skipped, method };
-  }
 }

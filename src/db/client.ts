@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { mkdirSync } from 'fs';
+import { mkdirSync, chmodSync } from 'fs';
 import { dirname } from 'path';
 import type { Memory } from '../types.js';
 
@@ -92,6 +92,9 @@ export function createDb(dbPath: string): Database.Database {
   mkdirSync(dirname(dbPath), { recursive: true });
   const db = new Database(dbPath);
   db.exec(SCHEMA_SQL);
+  if (process.platform !== 'win32') {
+    try { chmodSync(dbPath, 0o600); } catch {}
+  }
   return db;
 }
 
@@ -172,7 +175,7 @@ export class DbClient {
       WHERE memories_fts MATCH @query ${userFilter}
       ORDER BY f.rank
       LIMIT @limit
-    `).all({ query, user_id: options.user_id ?? null, limit: options.limit ?? 20 }) as Array<Record<string, unknown>>;
+    `).all({ query: '"' + query.replace(/"/g, '""') + '"', user_id: options.user_id ?? null, limit: options.limit ?? 20 }) as Array<Record<string, unknown>>;
 
     return rows.map(row => ({ memory: rowToMemory(row), rank: row.rank as number }));
   }

@@ -4,7 +4,7 @@
  *
  * Usage: npx memord setup
  */
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from 'fs';
 import { join } from 'path';
 import { homedir, platform } from 'os';
 
@@ -46,7 +46,17 @@ function readJson(path: string): Record<string, unknown> {
 
 function writeJson(path: string, data: unknown): void {
   mkdirSync(join(path, '..'), { recursive: true });
-  writeFileSync(path, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+  const tmp = path + '.tmp';
+  writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+  renameSync(tmp, path);
+}
+
+function escapeYaml(s: string): string {
+  return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r');
+}
+
+function escapeToml(s: string): string {
+  return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r');
 }
 
 function readYaml(path: string): string {
@@ -55,7 +65,9 @@ function readYaml(path: string): string {
 
 function writeFile(path: string, content: string): void {
   mkdirSync(join(path, '..'), { recursive: true });
-  writeFileSync(path, content, 'utf-8');
+  const tmp = path + '.tmp';
+  writeFileSync(tmp, content, 'utf-8');
+  renameSync(tmp, path);
 }
 
 function readToml(path: string): string {
@@ -241,7 +253,7 @@ function setupContinue(cmd: ReturnType<typeof getMemordCommand>): SetupResult {
     return { tool: 'Continue', path: configDir, status: 'skipped', message: 'Not installed' };
   }
   const yamlPath = join(configDir, 'config.yaml');
-  const entry = `\nmcpServers:\n  - name: memord\n    command: ${cmd.command}\n    args:\n${cmd.args.map(a => `      - "${a}"`).join('\n')}\n    env:\n      MEMORD_USER: "${USERNAME}"\n`;
+  const entry = `\nmcpServers:\n  - name: memord\n    command: ${cmd.command}\n    args:\n${cmd.args.map(a => `      - "${a}"`).join('\n')}\n    env:\n      MEMORD_USER: "${escapeYaml(USERNAME)}"\n`;
   try {
     const existing = readYaml(yamlPath);
     if (existing.includes('memord')) {
@@ -293,7 +305,7 @@ function setupCodexCli(cmd: ReturnType<typeof getMemordCommand>): SetupResult {
     if (existing.includes('[mcp_servers.memord]')) {
       return { tool: 'OpenAI Codex CLI', path, status: 'already_set', message: 'Already configured' };
     }
-    const entry = `\n[mcp_servers.memord]\ncommand = "${cmd.command}"\nargs = [${cmd.args.map(a => `"${a}"`).join(', ')}]\nenabled = true\n\n[mcp_servers.memord.env]\nMEMORD_USER = "${USERNAME}"\n`;
+    const entry = `\n[mcp_servers.memord]\ncommand = "${cmd.command}"\nargs = [${cmd.args.map(a => `"${a}"`).join(', ')}]\nenabled = true\n\n[mcp_servers.memord.env]\nMEMORD_USER = "${escapeToml(USERNAME)}"\n`;
     writeFile(path, existing + entry);
     return { tool: 'OpenAI Codex CLI', path, status: 'configured', message: 'Configured — restart Codex CLI' };
   } catch (e) {
@@ -319,7 +331,7 @@ function setupGoose(cmd: ReturnType<typeof getMemordCommand>): SetupResult {
     if (existing.includes('memord')) {
       return { tool: 'Goose', path, status: 'already_set', message: 'Already configured' };
     }
-    const entry = `\nextensions:\n  memord:\n    name: memord\n    cmd: ${cmd.command}\n    args:\n${cmd.args.map(a => `      - "${a}"`).join('\n')}\n    enabled: true\n    type: stdio\n    envs:\n      MEMORD_USER: "${USERNAME}"\n`;
+    const entry = `\nextensions:\n  memord:\n    name: memord\n    cmd: ${cmd.command}\n    args:\n${cmd.args.map(a => `      - "${a}"`).join('\n')}\n    enabled: true\n    type: stdio\n    envs:\n      MEMORD_USER: "${escapeYaml(USERNAME)}"\n`;
     writeFile(path, existing + entry);
     return { tool: 'Goose', path, status: 'configured', message: 'Configured — restart Goose' };
   } catch (e) {

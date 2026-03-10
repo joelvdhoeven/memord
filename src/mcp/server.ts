@@ -141,26 +141,6 @@ export function createMcpServer(manager: MemoryManager): Server {
           required: ['memory_id', 'content'],
         },
       },
-      {
-        name: 'extract_from_text',
-        description: 'Extract and store memories from a conversation text block. Uses Ollama LLM if available, falls back to regex patterns.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            text: { type: 'string', description: 'Conversation text to extract memories from' },
-            app: { type: 'string', description: 'Source application name' },
-          },
-          required: ['text'],
-        },
-      },
-      {
-        name: 'ollama_status',
-        description: 'Check if Ollama is available and which model is configured for memory extraction.',
-        inputSchema: {
-          type: 'object',
-          properties: {},
-        },
-      },
     ],
   }));
 
@@ -211,9 +191,6 @@ export function createMcpServer(manager: MemoryManager): Server {
                   topic: r.memory.topic,
                   content: r.memory.content,
                   importance: r.memory.importance,
-                  app: r.memory.app,
-                  score: Math.round(r.score * 1000) / 1000,
-                  stored: new Date(r.memory.ingestion_time).toISOString(),
                 })),
               }),
             }],
@@ -272,30 +249,11 @@ export function createMcpServer(manager: MemoryManager): Server {
           }
           // Re-embed and update
           const { embed } = await import('../embeddings/index.js');
-          const embedding = await embed(content);
+          const embedding = await embed(content, 'passage');
           manager['db'].update(memory_id, { content, last_accessed: Date.now() });
           manager['db'].updateEmbedding(memory_id, embedding);
           return {
             content: [{ type: 'text', text: JSON.stringify({ updated: true, memory_id }) }],
-          };
-        }
-
-        case 'extract_from_text': {
-          const { text, app } = z.object({
-            text: z.string(),
-            app: z.string().optional(),
-          }).parse(args);
-          const result = await manager.extractAndRemember(text, { app });
-          return {
-            content: [{ type: 'text', text: JSON.stringify(result) }],
-          };
-        }
-
-        case 'ollama_status': {
-          const { checkOllama } = await import('../extractor/ollama.js');
-          const status = await checkOllama();
-          return {
-            content: [{ type: 'text', text: JSON.stringify(status) }],
           };
         }
 
@@ -315,7 +273,7 @@ export function createMcpServer(manager: MemoryManager): Server {
   server.setRequestHandler(ListResourcesRequestSchema, async () => ({
     resources: [
       { uri: 'memory://stats', name: 'Memory Statistics', mimeType: 'application/json', description: 'Memory store stats: counts by type, oldest/newest' },
-      { uri: 'memory://recent', name: 'Recent Memories', mimeType: 'application/json', description: 'Last 20 memories for context injection' },
+      { uri: 'memory://recent', name: 'Recent Memories', mimeType: 'text/plain', description: 'Last 20 memories as compact prose bullets for context injection' },
     ],
   }));
 
@@ -326,7 +284,10 @@ export function createMcpServer(manager: MemoryManager): Server {
     }
     if (uri === 'memory://recent') {
       const memories = manager.listRecent({ limit: 20 });
-      return { contents: [{ uri, mimeType: 'application/json', text: JSON.stringify(memories) }] };
+      const prose = memories.map(m =>
+        `- [${m.type}${m.topic !== 'general' ? '/' + m.topic : ''}] ${m.content}`
+      ).join('\n');
+      return { contents: [{ uri, mimeType: 'text/plain', text: prose || '(no memories yet)' }] };
     }
     throw new Error(`Unknown resource: ${uri}`);
   });

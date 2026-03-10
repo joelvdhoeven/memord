@@ -5,30 +5,69 @@ import type { MemoryManager } from '../memory/manager.js';
 import type { MemoryType, MemorySource } from '../types.js';
 import { readFile } from 'fs/promises';
 import { existsSync } from 'fs';
-import { join, dirname } from 'path';
+import { join, dirname, resolve } from 'path';
+import { z } from 'zod';
 import { fileURLToPath } from 'url';
+
+const RememberSchema = z.object({
+  content: z.string().min(1).max(50_000),
+  type: z.enum(['preference', 'project_fact', 'constraint', 'goal', 'episodic', 'skill']).optional(),
+  topic: z.string().optional(),
+  importance: z.number().min(0).max(1).optional(),
+  source: z.enum(['claude_compact', 'manual', 'session_end', 'explicit', 'auto_extract', 'ollama_extract']).optional(),
+  app: z.string().optional(),
+  user_id: z.string().optional(),
+  event_time: z.number().optional(),
+});
+
+const ALLOWED_ORIGINS = new Set(['http://localhost:7432', 'http://127.0.0.1:7432']);
+
+interface RateBucket { count: number; resetAt: number }
+const rateLimitMap = new Map<string, RateBucket>();
+function checkRateLimit(ip: string): boolean {
+  const now = Date.now();
+  const bucket = rateLimitMap.get(ip);
+  if (!bucket || now >= bucket.resetAt) { rateLimitMap.set(ip, { count: 1, resetAt: now + 60_000 }); return true; }
+  if (bucket.count >= 60) return false;
+  bucket.count += 1;
+  return true;
+}
 
 export function createHttpServer(manager: MemoryManager, db?: Database.Database) {
   const app = new Hono();
 
-  // CORS for localhost dashboard
+  // Security headers
   app.use('*', async (c, next) => {
     await next();
-    c.res.headers.set('Access-Control-Allow-Origin', '*');
-    c.res.headers.set('Access-Control-Allow-Methods', 'GET,POST,DELETE,PATCH,OPTIONS');
-    c.res.headers.set('Access-Control-Allow-Headers', 'Content-Type');
+    c.res.headers.set('X-Content-Type-Options', 'nosniff');
+    c.res.headers.set('X-Frame-Options', 'DENY');
+    c.res.headers.set('Content-Security-Policy', "default-src 'self'");
+  });
+
+  // CORS — localhost only
+  app.use('*', async (c, next) => {
+    const origin = c.req.header('Origin');
+    if (origin !== undefined && !ALLOWED_ORIGINS.has(origin)) {
+      return c.json({ error: 'Forbidden' }, 403);
+    }
+    await next();
+    if (origin && ALLOWED_ORIGINS.has(origin)) {
+      c.res.headers.set('Access-Control-Allow-Origin', origin);
+      c.res.headers.set('Access-Control-Allow-Methods', 'GET,POST,DELETE,PATCH,OPTIONS');
+      c.res.headers.set('Access-Control-Allow-Headers', 'Content-Type');
+    }
   });
   app.options('*', (c) => new Response(null, { status: 204 }));
 
   // Resolve the public directory relative to this compiled file (dist/http/server.js -> dist/public)
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = dirname(__filename);
-  const publicDir = join(__dirname, '..', 'public');
+  const publicDir = resolve(join(__dirname, '..', 'public'));
 
   // Serve static assets (JS, CSS bundles from Vite)
   app.get('/assets/*', async (c) => {
-    const filePath = join(publicDir, c.req.path);
-    if (!existsSync(filePath)) return c.notFound();
+    const filePath = resolve(join(publicDir, c.req.path));
+    if (!filePath.startsWith(publicDir) || !existsSync(filePath)) return c.notFound();
     const content = await readFile(filePath);
     const ext = (filePath.split('.').pop() ?? '').toLowerCase();
     const mimeTypes: Record<string, string> = {
@@ -66,38 +105,25 @@ export function createHttpServer(manager: MemoryManager, db?: Database.Database)
 
   // Remember
   app.post('/memories', async (c) => {
-    const body = await c.req.json();
+    const ip = c.req.header('x-forwarded-for') ?? 'local';
+    if (!checkRateLimit(ip)) return c.json({ error: 'Too Many Requests' }, 429);
+    let raw: unknown;
+    try { raw = await c.req.json(); } catch { return c.json({ error: 'Invalid JSON' }, 400); }
+    const parsed = RememberSchema.safeParse(raw);
+    if (!parsed.success) return c.json({ error: 'Invalid request', details: parsed.error.issues }, 400);
     const result = await manager.remember({
-      ...body,
-      type: body.type as MemoryType | undefined,
-      source: body.source as MemorySource | undefined,
+      ...parsed.data,
+      type: parsed.data.type as MemoryType | undefined,
+      source: parsed.data.source as MemorySource | undefined,
     });
     return c.json(result, result.action === 'added' ? 201 : 200);
-  });
-
-  // Bulk extract from text using Ollama if available, regex fallback
-  app.post('/extract', async (c) => {
-    const body = await c.req.json();
-    const { text, app } = body as { text?: string; app?: string };
-    if (!text || typeof text !== 'string') {
-      return c.json({ error: 'text required' }, 400);
-    }
-    const result = await manager.extractAndRemember(text, { app });
-    return c.json(result);
-  });
-
-  // Ollama availability check
-  app.get('/ollama/status', async (c) => {
-    const { checkOllama } = await import('../extractor/ollama.js');
-    const status = await checkOllama();
-    return c.json(status);
   });
 
   // Recall
   app.get('/memories/search', async (c) => {
     const query = c.req.query('q') ?? '';
     const user_id = c.req.query('user_id');
-    const limit = parseInt(c.req.query('limit') ?? '10');
+    const limit = Math.min(Math.max(parseInt(c.req.query('limit') ?? '10', 10) || 10, 1), 100);
     const since = c.req.query('since') ? new Date(c.req.query('since')!).getTime() : undefined;
     const results = await manager.recall({ query, user_id, limit, since });
     return c.json({ count: results.length, results });
@@ -106,7 +132,7 @@ export function createHttpServer(manager: MemoryManager, db?: Database.Database)
   // List recent
   app.get('/memories', (c) => {
     const user_id = c.req.query('user_id');
-    const limit = parseInt(c.req.query('limit') ?? '50');
+    const limit = Math.min(Math.max(parseInt(c.req.query('limit') ?? '50', 10) || 50, 1), 100);
     const since_hours = c.req.query('since_hours') ? parseFloat(c.req.query('since_hours')!) : undefined;
     const memories = manager.listRecent({ user_id, limit, since_hours });
     return c.json({ count: memories.length, memories });
