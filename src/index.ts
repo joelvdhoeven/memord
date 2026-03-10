@@ -30,14 +30,16 @@ async function main() {
     similarity_threshold: parseFloat(process.env.MEMORD_SIMILARITY_THRESHOLD ?? '0.08'),
   });
 
-  // Pre-load embedding model
-  await loadEmbedder();
-
   if (MODE === 'http' || MODE === 'both') {
+    // Pre-load embeddings for HTTP mode (user-facing, can show loading state)
+    await loadEmbedder();
     startHttpServer(manager, HTTP_PORT);
   }
 
   if (MODE === 'mcp' || MODE === 'both') {
+    // Start MCP immediately — embeddings load lazily on first use
+    // This prevents Claude Desktop from timing out during handshake
+    loadEmbedder().catch(err => console.error('[memord] Embedder preload failed:', err));
     await startMcpStdio(manager);
   }
 
