@@ -31,6 +31,15 @@ function getMemordCommand(): { command: string; args: string[] } {
   return { command: 'npx', args: ['memord', 'mcp'] };
 }
 
+// Claude Code on Windows requires cmd /c wrapper to resolve npx correctly
+function getMemordCommandForClaudeCode(): { command: string; args: string[] } {
+  const base = getMemordCommand();
+  if (IS_WIN && base.command === 'npx') {
+    return { command: 'cmd', args: ['/c', 'npx', ...base.args.slice(1)] };
+  }
+  return base;
+}
+
 function readJson(path: string): Record<string, unknown> {
   try { return JSON.parse(readFileSync(path, 'utf-8')); } catch { return {}; }
 }
@@ -161,13 +170,14 @@ function setupClaudeDesktop(cmd: ReturnType<typeof getMemordCommand>): SetupResu
   return injectMcpServers(path, cmd, 'Claude Desktop');
 }
 
-function setupClaudeCode(cmd: ReturnType<typeof getMemordCommand>): SetupResult {
+function setupClaudeCode(_cmd: ReturnType<typeof getMemordCommand>): SetupResult {
   // Claude Code user-scope MCP config lives in ~/.claude.json (not ~/.claude/settings.json)
+  // On Windows, npx requires a cmd /c wrapper to resolve correctly
   const path = join(HOME, '.claude.json');
   if (!dirExists(join(HOME, '.claude'))) {
     return { tool: 'Claude Code', path, status: 'skipped', message: 'Not installed' };
   }
-  return injectMcpServers(path, cmd, 'Claude Code');
+  return injectMcpServers(path, getMemordCommandForClaudeCode(), 'Claude Code');
 }
 
 function setupCursor(cmd: ReturnType<typeof getMemordCommand>): SetupResult {
@@ -206,7 +216,7 @@ function setupVisualStudio(cmd: ReturnType<typeof getMemordCommand>): SetupResul
     dirExists('C:\\Program Files (x86)\\Microsoft Visual Studio');
   const path = join(HOME, '.mcp.json');
   if (!vsInstalled) return { tool: 'Visual Studio', path, status: 'skipped', message: 'Not installed' };
-  return injectVsCodeServers(path, cmd, 'Visual Studio');
+  return injectMcpServers(path, cmd, 'Visual Studio');
 }
 
 function setupCline(cmd: ReturnType<typeof getMemordCommand>): SetupResult {
@@ -264,30 +274,8 @@ function setupZed(cmd: ReturnType<typeof getMemordCommand>): SetupResult {
 }
 
 function setupJetBrains(cmd: ReturnType<typeof getMemordCommand>): SetupResult {
-  // Find any JetBrains config dir
-  const jbBase = IS_WIN ? join(APPDATA, 'JetBrains')
-    : IS_MAC ? join(HOME, 'Library', 'Application Support', 'JetBrains')
-    : join(HOME, '.config', 'JetBrains');
-
-  if (!dirExists(jbBase)) {
-    return { tool: 'JetBrains IDEs', path: jbBase, status: 'skipped', message: 'Not installed' };
-  }
-
-  // Try all installed JetBrains products
-  const { readdirSync } = require('fs') as typeof import('fs');
-  let configured = 0;
-  let lastPath = '';
-  try {
-    const products = readdirSync(jbBase).filter(d => existsSync(join(jbBase, d)));
-    for (const product of products) {
-      const path = join(jbBase, product, 'mcp.json');
-      const result = injectJetBrainsServers(path, cmd, product);
-      if (result.status === 'configured') { configured++; lastPath = path; }
-    }
-  } catch {}
-
-  if (configured > 0) return { tool: 'JetBrains IDEs', path: lastPath, status: 'configured', message: `Configured ${configured} IDE(s) — restart JetBrains` };
-  return { tool: 'JetBrains IDEs', path: jbBase, status: 'already_set', message: 'Already configured' };
+  const path = join(HOME, '.junie', 'mcp', 'mcp.json');
+  return injectMcpServers(path, cmd, 'JetBrains IDEs', true);
 }
 
 function setupGeminiCli(cmd: ReturnType<typeof getMemordCommand>): SetupResult {
@@ -319,8 +307,11 @@ function setupAmazonQ(cmd: ReturnType<typeof getMemordCommand>): SetupResult {
 }
 
 function setupGoose(cmd: ReturnType<typeof getMemordCommand>): SetupResult {
-  const path = join(HOME, '.config', 'goose', 'config.yaml');
-  if (!dirExists(join(HOME, '.config', 'goose'))) {
+  const configDir = IS_WIN
+    ? join(APPDATA, 'Block', 'goose', 'config')
+    : join(HOME, '.config', 'goose');
+  const path = join(configDir, 'config.yaml');
+  if (!dirExists(configDir)) {
     return { tool: 'Goose', path, status: 'skipped', message: 'Not installed' };
   }
   try {
@@ -342,8 +333,9 @@ function setupNeovim(cmd: ReturnType<typeof getMemordCommand>): SetupResult {
 }
 
 function setupWarp(cmd: ReturnType<typeof getMemordCommand>): SetupResult {
-  if (!IS_MAC) return { tool: 'Warp', path: '', status: 'skipped', message: 'macOS only' };
-  const path = join(HOME, 'Library', 'Group Containers', '2BBY89MBSN.dev.warp', 'Library', 'Application Support', 'dev.warp.Warp-Stable', 'mcp', 'mcp.json');
+  const path = IS_MAC
+    ? join(HOME, 'Library', 'Group Containers', '2BBY89MBSN.dev.warp', 'Library', 'Application Support', 'dev.warp.Warp-Stable', 'mcp', 'mcp.json')
+    : join(HOME, '.config', 'warp', 'mcp.json');
   return injectMcpServers(path, cmd, 'Warp Terminal', true);
 }
 
@@ -426,32 +418,8 @@ function setupKiro(cmd: ReturnType<typeof getMemordCommand>): SetupResult {
 }
 
 function setupGeminiCodeAssist(cmd: ReturnType<typeof getMemordCommand>): SetupResult {
-  const base = IS_WIN ? join(APPDATA, 'Code') : IS_MAC
-    ? join(HOME, 'Library', 'Application Support', 'Code')
-    : join(HOME, '.config', 'Code');
-  const path = join(base, 'User', 'settings.json');
-  if (!dirExists(join(base, 'User'))) {
-    return { tool: 'Gemini Code Assist', path, status: 'skipped', message: 'Not installed' };
-  }
-  try {
-    const config = readJson(path);
-    const servers = (config['geminicodeassist.mcpServers'] as Record<string, unknown>) ?? {};
-    const existing = servers['memord'] as Record<string, unknown> | undefined;
-    if (existing) {
-      const existingArgs = existing.args as string[] | undefined;
-      if (JSON.stringify(existingArgs) === JSON.stringify(cmd.args)) {
-        return { tool: 'Gemini Code Assist', path, status: 'already_set', message: 'Already configured' };
-      }
-      servers['memord'] = mcpEntry(cmd);
-      writeJson(path, { ...config, 'geminicodeassist.mcpServers': servers });
-      return { tool: 'Gemini Code Assist', path, status: 'configured', message: 'Updated config — restart the tool' };
-    }
-    servers['memord'] = mcpEntry(cmd);
-    writeJson(path, { ...config, 'geminicodeassist.mcpServers': servers });
-    return { tool: 'Gemini Code Assist', path, status: 'configured', message: 'Configured — restart the tool' };
-  } catch (e) {
-    return { tool: 'Gemini Code Assist', path, status: 'error', message: String(e) };
-  }
+  const path = join(HOME, '.gemini', 'settings.json');
+  return injectMcpServers(path, cmd, 'Gemini Code Assist', true);
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────
