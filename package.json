@@ -6,11 +6,19 @@
   "bin": {
     "memord": "./dist/index.js"
   },
+  "files": [
+    "dist/",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "test": "vitest"
+    "test": "vitest",
+    "prepare": "npm run build"
   },
   "dependencies": {
     "@hono/node-server": "^1.19.11",
