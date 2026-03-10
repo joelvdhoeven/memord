@@ -96,6 +96,11 @@ export function createDb(dbPath: string): Database.Database {
 }
 
 export class DbClient {
+  private static readonly UPDATABLE_FIELDS = new Set([
+    'type', 'topic', 'content', 'importance', 'source', 'app',
+    'user_id', 'event_time', 'last_accessed', 'access_count', 'tags', 'metadata'
+  ]);
+
   constructor(private db: Database.Database) {}
 
   insert(memory: Memory, embedding?: Float32Array): void {
@@ -126,7 +131,9 @@ export class DbClient {
   }
 
   update(id: string, updates: Partial<Memory>): void {
-    const fields = Object.keys(updates).map(k => `${k} = @${k}`).join(', ');
+    const safeKeys = Object.keys(updates).filter(k => DbClient.UPDATABLE_FIELDS.has(k));
+    if (safeKeys.length === 0) return;
+    const fields = safeKeys.map(k => `${k} = @${k}`).join(', ');
     const params: Record<string, unknown> = { id, ...updates };
     if (updates.tags) params.tags = JSON.stringify(updates.tags);
     if (updates.metadata) params.metadata = JSON.stringify(updates.metadata);
@@ -210,11 +217,36 @@ export class DbClient {
     }));
   }
 
+
+  /**
+   * Fetch specific memories by ID, returning only those that have a stored
+   * embedding.  Used to guarantee FTS hits are always in the vector-scoring
+   * pool regardless of their importance/recency rank.
+   */
+  getByIds(ids: string[]): Array<{ memory: Memory; embedding: Float32Array }> {
+    if (ids.length === 0) return [];
+    const placeholders = ids.map(() => '?').join(', ');
+    const rows = this.db.prepare(
+      `SELECT * FROM memories WHERE id IN (${placeholders}) AND embedding IS NOT NULL`
+    ).all(...ids) as Array<Record<string, unknown>>;
+    return rows.map(row => ({
+      memory: rowToMemory(row),
+      embedding: new Float32Array(
+        (row.embedding as Buffer).buffer,
+        (row.embedding as Buffer).byteOffset,
+        (row.embedding as Buffer).byteLength / 4,
+      ),
+    }));
+  }
   /** Count of memories that have a stored embedding vector. */
   countWithEmbeddings(user_id?: string): number {
     const where = user_id ? 'WHERE user_id = ? AND embedding IS NOT NULL' : 'WHERE embedding IS NOT NULL';
     const params = user_id ? [user_id] : [];
     return (this.db.prepare(`SELECT COUNT(*) as c FROM memories ${where}`).get(...params) as { c: number }).c;
+  }
+
+  updateEmbedding(id: string, embedding: Float32Array): void {
+    this.db.prepare('UPDATE memories SET embedding = ? WHERE id = ?').run(Buffer.from(embedding.buffer), id);
   }
 
   touchAccessed(id: string): void {

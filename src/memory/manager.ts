@@ -133,17 +133,25 @@ export class MemoryManager {
     // Vector search — pre-filter to top 500 by importance+recency so that
     // JS-side cosine comparison never iterates the full corpus.
     const topCandidates = this.db.getTopCandidates(userId, 500);
-    const vectorResults = topCandidates
+
+    // Ensure every FTS hit is included in the candidate pool for vector
+    // scoring, even if it falls outside the top-500 importance/recency window.
+    const ftsIds = ftsResults.map(r => r.memory.id);
+    const topIds = new Set(topCandidates.map(c => c.memory.id));
+    const ftsOnlyIds = ftsIds.filter(id => !topIds.has(id));
+    const ftsCandidates = this.db.getByIds(ftsOnlyIds);
+    const candidates = [...topCandidates, ...ftsCandidates];
+
+    const vectorResults = candidates
       .map(({ memory, embedding }) => ({ memory, embedding, dist: cosineDistance(queryEmbedding, embedding) }))
       .sort((a, b) => a.dist - b.dist)
       .slice(0, 20);
 
     // Build position maps for RRF
-    const ftsIds = ftsResults.map(r => r.memory.id);
     const vecIds = vectorResults.map(r => r.memory.id);
     const allIds = [...new Set([...ftsIds, ...vecIds])];
 
-    const embeddingMap = new Map(topCandidates.map(e => [e.memory.id, e.embedding]));
+    const embeddingMap = new Map(candidates.map(e => [e.memory.id, e.embedding]));
     const memoryMap = new Map([
       ...ftsResults.map(r => [r.memory.id, r.memory] as const),
       ...vectorResults.map(r => [r.memory.id, r.memory] as const),

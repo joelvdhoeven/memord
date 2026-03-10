@@ -264,11 +264,17 @@ export function createMcpServer(manager: MemoryManager): Server {
 
         case 'update_memory': {
           const { memory_id, content } = UpdateSchema.parse(args);
+          if (!manager['db'].getById(memory_id)) {
+            return {
+              content: [{ type: 'text', text: JSON.stringify({ updated: false, memory_id, error: 'Memory not found' }) }],
+              isError: true,
+            };
+          }
           // Re-embed and update
           const { embed } = await import('../embeddings/index.js');
           const embedding = await embed(content);
           manager['db'].update(memory_id, { content, last_accessed: Date.now() });
-          manager['db'].insert({ ...manager['db'].getById(memory_id)!, content }, embedding);
+          manager['db'].updateEmbedding(memory_id, embedding);
           return {
             content: [{ type: 'text', text: JSON.stringify({ updated: true, memory_id }) }],
           };
