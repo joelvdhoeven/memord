@@ -9,9 +9,14 @@ import { loadEmbedder } from './embeddings/index.js';
 
 const DB_PATH = join(homedir(), '.memord', 'memories.db');
 const HTTP_PORT = parseInt(process.env.MEMORD_PORT ?? '7432');
-const MODE = process.argv[2] ?? 'mcp';  // 'mcp' | 'http' | 'both'
+const MODE = process.argv[2] ?? 'mcp';  // 'mcp' | 'http' | 'both' | 'setup'
 
 async function main() {
+  if (MODE === 'setup') {
+    const { runSetup } = await import('./setup.js');
+    runSetup();
+    return;
+  }
   console.error(`[memord] Starting (mode: ${MODE})`);
   console.error(`[memord] Database: ${DB_PATH}`);
 
