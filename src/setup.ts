@@ -27,8 +27,8 @@ export interface SetupResult {
 
 function getMemordCommand(): { command: string; args: string[] } {
   const localDist = join(HOME, 'memord', 'dist', 'index.js');
-  if (existsSync(localDist)) return { command: 'node', args: [localDist] };
-  return { command: 'npx', args: ['memord'] };
+  if (existsSync(localDist)) return { command: 'node', args: [localDist, 'mcp'] };
+  return { command: 'npx', args: ['memord', 'mcp'] };
 }
 
 function readJson(path: string): Record<string, unknown> {
@@ -76,7 +76,18 @@ function injectMcpServers(
   try {
     const config = readJson(configPath);
     const servers = (config.mcpServers as Record<string, unknown>) ?? {};
-    if (servers['memord']) return { tool, path: configPath, status: 'already_set', message: 'Already configured' };
+    const existing = servers['memord'] as Record<string, unknown> | undefined;
+    if (existing) {
+      // Upgrade old entries that are missing the 'mcp' subcommand arg
+      const existingArgs = existing.args as string[] | undefined;
+      const wantedArgs = cmd.args;
+      if (JSON.stringify(existingArgs) === JSON.stringify(wantedArgs)) {
+        return { tool, path: configPath, status: 'already_set', message: 'Already configured' };
+      }
+      servers['memord'] = mcpEntry(cmd);
+      writeJson(configPath, { ...config, mcpServers: servers });
+      return { tool, path: configPath, status: 'configured', message: 'Updated config — restart the tool' };
+    }
     servers['memord'] = mcpEntry(cmd);
     writeJson(configPath, { ...config, mcpServers: servers });
     return { tool, path: configPath, status: 'configured', message: 'Configured — restart the tool' };
@@ -98,7 +109,16 @@ function injectVsCodeServers(
   try {
     const config = readJson(configPath);
     const servers = (config.servers as Record<string, unknown>) ?? {};
-    if (servers['memord']) return { tool, path: configPath, status: 'already_set', message: 'Already configured' };
+    const existing = servers['memord'] as Record<string, unknown> | undefined;
+    if (existing) {
+      const existingArgs = existing.args as string[] | undefined;
+      if (JSON.stringify(existingArgs) === JSON.stringify(cmd.args)) {
+        return { tool, path: configPath, status: 'already_set', message: 'Already configured' };
+      }
+      servers['memord'] = { type: 'stdio', command: cmd.command, args: cmd.args, env: { MEMORD_USER: USERNAME } };
+      writeJson(configPath, { ...config, servers });
+      return { tool, path: configPath, status: 'configured', message: 'Updated config — restart the tool' };
+    }
     servers['memord'] = { type: 'stdio', command: cmd.command, args: cmd.args, env: { MEMORD_USER: USERNAME } };
     writeJson(configPath, { ...config, servers });
     return { tool, path: configPath, status: 'configured', message: 'Configured — restart the tool' };
@@ -152,13 +172,20 @@ function setupClaudeCode(cmd: ReturnType<typeof getMemordCommand>): SetupResult 
 
 function setupCursor(cmd: ReturnType<typeof getMemordCommand>): SetupResult {
   const path = join(HOME, '.cursor', 'mcp.json');
+  // Check common Cursor install locations before writing config
+  const cursorInstalled =
+    dirExists(join(HOME, '.cursor')) ||
+    (IS_WIN && dirExists(join(HOME, 'AppData', 'Local', 'Programs', 'Cursor'))) ||
+    (!IS_WIN && !IS_MAC && dirExists('/usr/bin/cursor')) ||
+    (IS_MAC && dirExists('/Applications/Cursor.app'));
+  if (!cursorInstalled) {
+    return { tool: 'Cursor', path, status: 'skipped', message: 'Not installed' };
+  }
   return injectMcpServers(path, cmd, 'Cursor');
 }
 
 function setupWindsurf(cmd: ReturnType<typeof getMemordCommand>): SetupResult {
-  const path = IS_WIN
-    ? join(HOME, '.codeium', 'windsurf', 'mcp_config.json')
-    : join(HOME, '.codeium', 'windsurf', 'mcp_config.json');
+  const path = join(HOME, '.codeium', 'windsurf', 'mcp_config.json');
   return injectMcpServers(path, cmd, 'Windsurf', true);
 }
 
@@ -173,7 +200,12 @@ function setupVsCode(cmd: ReturnType<typeof getMemordCommand>): SetupResult {
 
 function setupVisualStudio(cmd: ReturnType<typeof getMemordCommand>): SetupResult {
   if (!IS_WIN) return { tool: 'Visual Studio', path: '', status: 'skipped', message: 'Windows only' };
+  // Check both x64 and x86 install directories
+  const vsInstalled =
+    dirExists('C:\\Program Files\\Microsoft Visual Studio') ||
+    dirExists('C:\\Program Files (x86)\\Microsoft Visual Studio');
   const path = join(HOME, '.mcp.json');
+  if (!vsInstalled) return { tool: 'Visual Studio', path, status: 'skipped', message: 'Not installed' };
   return injectVsCodeServers(path, cmd, 'Visual Studio');
 }
 

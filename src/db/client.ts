@@ -186,6 +186,37 @@ export class DbClient {
       .filter(Boolean) as Array<{ memory: Memory; embedding: Float32Array }>;
   }
 
+  /**
+   * Returns at most `limit` memories that have embeddings, ordered by
+   * importance DESC then last_accessed DESC.  Use this instead of
+   * getAllWithEmbeddings() for vector-search pre-filtering so that we never
+   * load the entire corpus into JS heap.
+   */
+  getTopCandidates(user_id?: string, limit = 500): Array<{ memory: Memory; embedding: Float32Array }> {
+    const where = user_id
+      ? 'WHERE user_id = ? AND embedding IS NOT NULL'
+      : 'WHERE embedding IS NOT NULL';
+    const params: unknown[] = user_id ? [user_id, limit] : [limit];
+    const rows = this.db.prepare(
+      `SELECT * FROM memories ${where} ORDER BY importance DESC, last_accessed DESC LIMIT ?`
+    ).all(...params) as Array<Record<string, unknown>>;
+    return rows.map(row => ({
+      memory: rowToMemory(row),
+      embedding: new Float32Array(
+        (row.embedding as Buffer).buffer,
+        (row.embedding as Buffer).byteOffset,
+        (row.embedding as Buffer).byteLength / 4,
+      ),
+    }));
+  }
+
+  /** Count of memories that have a stored embedding vector. */
+  countWithEmbeddings(user_id?: string): number {
+    const where = user_id ? 'WHERE user_id = ? AND embedding IS NOT NULL' : 'WHERE embedding IS NOT NULL';
+    const params = user_id ? [user_id] : [];
+    return (this.db.prepare(`SELECT COUNT(*) as c FROM memories ${where}`).get(...params) as { c: number }).c;
+  }
+
   touchAccessed(id: string): void {
     this.db.prepare(`
       UPDATE memories SET last_accessed = @now, access_count = access_count + 1 WHERE id = @id

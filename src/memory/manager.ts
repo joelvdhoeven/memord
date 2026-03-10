@@ -81,8 +81,9 @@ export class MemoryManager {
 
     const embedding = await embed(input.content);
 
-    // Quality gate 2: similarity dedupe
-    const existing = this.db.getAllWithEmbeddings(input.user_id ?? 'default');
+    // Quality gate 2: similarity dedupe — only scan top 500 most recent+important
+    // to avoid an O(n) full-table scan on every insert.
+    const existing = this.db.getTopCandidates(input.user_id ?? 'default', 500);
     for (const { memory, embedding: existingEmb } of existing) {
       const dist = cosineDistance(embedding, existingEmb);
       if (dist < this.config.similarity_threshold) {
@@ -129,9 +130,10 @@ export class MemoryManager {
     // FTS search
     const ftsResults = this.db.searchFts(options.query, { user_id: userId, limit: 20 });
 
-    // Vector search (JS cosine over all stored embeddings)
-    const allWithEmb = this.db.getAllWithEmbeddings(userId);
-    const vectorResults = allWithEmb
+    // Vector search — pre-filter to top 500 by importance+recency so that
+    // JS-side cosine comparison never iterates the full corpus.
+    const topCandidates = this.db.getTopCandidates(userId, 500);
+    const vectorResults = topCandidates
       .map(({ memory, embedding }) => ({ memory, embedding, dist: cosineDistance(queryEmbedding, embedding) }))
       .sort((a, b) => a.dist - b.dist)
       .slice(0, 20);
@@ -141,7 +143,7 @@ export class MemoryManager {
     const vecIds = vectorResults.map(r => r.memory.id);
     const allIds = [...new Set([...ftsIds, ...vecIds])];
 
-    const embeddingMap = new Map(allWithEmb.map(e => [e.memory.id, e.embedding]));
+    const embeddingMap = new Map(topCandidates.map(e => [e.memory.id, e.embedding]));
     const memoryMap = new Map([
       ...ftsResults.map(r => [r.memory.id, r.memory] as const),
       ...vectorResults.map(r => [r.memory.id, r.memory] as const),
@@ -206,5 +208,27 @@ export class MemoryManager {
 
   stats(userId?: string) {
     return this.db.stats(userId);
+  }
+
+  // ── Smart extraction ─────────────────────────────────────────────────────
+
+  async extractAndRemember(
+    text: string,
+    options: { app?: string; user_id?: string } = {}
+  ): Promise<{ added: number; updated: number; skipped: number; method: 'ollama' | 'regex' }> {
+    const { extractSmart } = await import('../extractor/ollama.js');
+    const { memories, method } = await extractSmart(text, {
+      app: options.app,
+      user_id: options.user_id ?? this.config.user_id,
+    });
+
+    let added = 0, updated = 0, skipped = 0;
+    for (const input of memories) {
+      const result = await this.remember({ ...input, user_id: options.user_id ?? this.config.user_id });
+      if (result.action === 'added') added++;
+      else if (result.action === 'updated') updated++;
+      else skipped++;
+    }
+    return { added, updated, skipped, method };
   }
 }

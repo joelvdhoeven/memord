@@ -15,7 +15,7 @@ const RememberSchema = z.object({
   type: z.enum(['preference', 'project_fact', 'constraint', 'goal', 'episodic', 'skill']).optional(),
   topic: z.string().optional().describe('Topic category, e.g. "tech_stack", "user_bio"'),
   importance: z.number().min(0).max(1).optional().describe('0 = trivial, 1 = critical'),
-  source: z.enum(['claude_compact', 'manual', 'session_end', 'explicit', 'auto_extract']).optional(),
+  source: z.enum(['claude_compact', 'manual', 'session_end', 'explicit', 'auto_extract', 'ollama_extract']).optional(),
   app: z.string().optional().describe('Which AI tool is writing this memory'),
   user_id: z.string().optional(),
   tags: z.array(z.string()).optional(),
@@ -63,7 +63,7 @@ export function createMcpServer(manager: MemoryManager): Server {
     tools: [
       {
         name: 'remember',
-        description: 'Store information in long-term memory. Call this when the user shares preferences, facts about themselves or their projects, decisions made, or anything worth remembering across sessions.',
+        description: 'Store information in long-term memory. Call this proactively when: (1) the user shares preferences, constraints, or facts about their projects, (2) before context compaction to preserve important context, (3) the user explicitly asks to remember something. Use importance 0.8+ for constraints and explicit requests, 0.5-0.7 for preferences and project facts. The system deduplicates automatically — call remember freely.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -71,7 +71,7 @@ export function createMcpServer(manager: MemoryManager): Server {
             type: { type: 'string', enum: ['preference', 'project_fact', 'constraint', 'goal', 'episodic', 'skill'] },
             topic: { type: 'string', description: 'Topic category e.g. "tech_stack", "user_bio", "project_name"' },
             importance: { type: 'number', description: '0.0 to 1.0. Use 0.8+ for important facts, 0.3-0.5 for context.' },
-            source: { type: 'string', enum: ['claude_compact', 'manual', 'session_end', 'explicit', 'auto_extract'] },
+            source: { type: 'string', enum: ['claude_compact', 'manual', 'session_end', 'explicit', 'auto_extract', 'ollama_extract'] },
             app: { type: 'string', description: 'Which tool is writing this (e.g. "claude-desktop")' },
             user_id: { type: 'string' },
             tags: { type: 'array', items: { type: 'string' } },
@@ -139,6 +139,26 @@ export function createMcpServer(manager: MemoryManager): Server {
             content: { type: 'string' },
           },
           required: ['memory_id', 'content'],
+        },
+      },
+      {
+        name: 'extract_from_text',
+        description: 'Extract and store memories from a conversation text block. Uses Ollama LLM if available, falls back to regex patterns.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            text: { type: 'string', description: 'Conversation text to extract memories from' },
+            app: { type: 'string', description: 'Source application name' },
+          },
+          required: ['text'],
+        },
+      },
+      {
+        name: 'ollama_status',
+        description: 'Check if Ollama is available and which model is configured for memory extraction.',
+        inputSchema: {
+          type: 'object',
+          properties: {},
         },
       },
     ],
@@ -251,6 +271,25 @@ export function createMcpServer(manager: MemoryManager): Server {
           manager['db'].insert({ ...manager['db'].getById(memory_id)!, content }, embedding);
           return {
             content: [{ type: 'text', text: JSON.stringify({ updated: true, memory_id }) }],
+          };
+        }
+
+        case 'extract_from_text': {
+          const { text, app } = z.object({
+            text: z.string(),
+            app: z.string().optional(),
+          }).parse(args);
+          const result = await manager.extractAndRemember(text, { app });
+          return {
+            content: [{ type: 'text', text: JSON.stringify(result) }],
+          };
+        }
+
+        case 'ollama_status': {
+          const { checkOllama } = await import('../extractor/ollama.js');
+          const status = await checkOllama();
+          return {
+            content: [{ type: 'text', text: JSON.stringify(status) }],
           };
         }
 

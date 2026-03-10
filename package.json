@@ -16,9 +16,10 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
+    "build:dashboard": "cd dashboard && npm install && npm run build",
     "start": "node dist/index.js",
     "test": "vitest",
-    "prepare": "npm run build"
+    "prepare": "npm run build && npm run build:dashboard"
   },
   "dependencies": {
     "@hono/node-server": "^1.19.11",

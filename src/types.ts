@@ -1,5 +1,5 @@
 export type MemoryType = 'preference' | 'project_fact' | 'constraint' | 'goal' | 'episodic' | 'skill';
-export type MemorySource = 'claude_compact' | 'manual' | 'session_end' | 'explicit' | 'auto_extract';
+export type MemorySource = 'claude_compact' | 'manual' | 'session_end' | 'explicit' | 'auto_extract' | 'ollama_extract';
 
 export interface Memory {
   id: string;

@@ -6,6 +6,7 @@ import { MemoryManager } from './memory/manager.js';
 import { startMcpStdio } from './mcp/server.js';
 import { startHttpServer } from './http/server.js';
 import { loadEmbedder } from './embeddings/index.js';
+import { scheduleMaintenance } from './db/maintenance.js';
 
 const DB_PATH = join(homedir(), '.memord', 'memories.db');
 const HTTP_PORT = parseInt(process.env.MEMORD_PORT ?? '7432');
@@ -21,6 +22,13 @@ async function main() {
   console.error(`[memord] Database: ${DB_PATH}`);
 
   const db = createDb(DB_PATH);
+
+  const stopMaintenance = scheduleMaintenance(db);
+  process.on('SIGINT', () => {
+    stopMaintenance();
+    process.exit(0);
+  });
+
   const client = new DbClient(db);
   const manager = new MemoryManager(client, {
     db_path: DB_PATH,
@@ -33,7 +41,7 @@ async function main() {
   if (MODE === 'http' || MODE === 'both') {
     // Pre-load embeddings for HTTP mode (user-facing, can show loading state)
     await loadEmbedder();
-    startHttpServer(manager, HTTP_PORT);
+    startHttpServer(manager, HTTP_PORT, db);
   }
 
   if (MODE === 'mcp' || MODE === 'both') {
@@ -45,7 +53,6 @@ async function main() {
 
   if (MODE === 'http') {
     // Keep process alive for HTTP-only mode
-    process.on('SIGINT', () => { console.error('[memord] Shutting down'); process.exit(0); });
     await new Promise(() => {});
   }
 }

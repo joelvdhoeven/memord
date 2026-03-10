@@ -1,11 +1,14 @@
 import { Hono } from 'hono';
 import { serve } from '@hono/node-server';
+import type Database from 'better-sqlite3';
 import type { MemoryManager } from '../memory/manager.js';
 import type { MemoryType, MemorySource } from '../types.js';
-import { dashboardHtml } from './dashboard.js';
-import { extractFromText } from '../extractor/index.js';
+import { readFile } from 'fs/promises';
+import { existsSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 
-export function createHttpServer(manager: MemoryManager) {
+export function createHttpServer(manager: MemoryManager, db?: Database.Database) {
   const app = new Hono();
 
   // CORS for localhost dashboard
@@ -17,8 +20,40 @@ export function createHttpServer(manager: MemoryManager) {
   });
   app.options('*', (c) => new Response(null, { status: 204 }));
 
-  // Dashboard
-  app.get('/', (c) => c.html(dashboardHtml));
+  // Resolve the public directory relative to this compiled file (dist/http/server.js -> dist/public)
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = dirname(__filename);
+  const publicDir = join(__dirname, '..', 'public');
+
+  // Serve static assets (JS, CSS bundles from Vite)
+  app.get('/assets/*', async (c) => {
+    const filePath = join(publicDir, c.req.path);
+    if (!existsSync(filePath)) return c.notFound();
+    const content = await readFile(filePath);
+    const ext = (filePath.split('.').pop() ?? '').toLowerCase();
+    const mimeTypes: Record<string, string> = {
+      'js': 'application/javascript',
+      'css': 'text/css',
+      'svg': 'image/svg+xml',
+      'png': 'image/png',
+      'ico': 'image/x-icon',
+      'woff': 'font/woff',
+      'woff2': 'font/woff2',
+    };
+    return new Response(content, {
+      headers: { 'Content-Type': mimeTypes[ext] ?? 'application/octet-stream' },
+    });
+  });
+
+  // Dashboard (serve index.html or fallback message)
+  app.get('/', async (c) => {
+    const indexPath = join(publicDir, 'index.html');
+    if (!existsSync(indexPath)) {
+      return c.html('<h1>memord</h1><p>Dashboard not built. Run: npm run build:dashboard</p>');
+    }
+    const html = await readFile(indexPath, 'utf8');
+    return c.html(html);
+  });
 
   // Health
   app.get('/health', (c) => c.json({ status: 'ok', version: '0.1.0' }));
@@ -40,19 +75,22 @@ export function createHttpServer(manager: MemoryManager) {
     return c.json(result, result.action === 'added' ? 201 : 200);
   });
 
-  // Bulk extract from text (used by Claude Code hooks)
+  // Bulk extract from text using Ollama if available, regex fallback
   app.post('/extract', async (c) => {
-    const body = await c.req.json() as { text: string; source?: MemorySource; app?: string; user_id?: string };
-    const candidates = extractFromText(body.text, {
-      source: body.source,
-      app: body.app,
-      user_id: body.user_id,
-    });
-    const results = await Promise.all(candidates.map(m => manager.remember(m)));
-    const added = results.filter(r => r.action === 'added').length;
-    const updated = results.filter(r => r.action === 'updated').length;
-    const skipped = results.filter(r => r.action === 'skipped').length;
-    return c.json({ extracted: candidates.length, added, updated, skipped });
+    const body = await c.req.json();
+    const { text, app } = body as { text?: string; app?: string };
+    if (!text || typeof text !== 'string') {
+      return c.json({ error: 'text required' }, 400);
+    }
+    const result = await manager.extractAndRemember(text, { app });
+    return c.json(result);
+  });
+
+  // Ollama availability check
+  app.get('/ollama/status', async (c) => {
+    const { checkOllama } = await import('../extractor/ollama.js');
+    const status = await checkOllama();
+    return c.json(status);
   });
 
   // Recall
@@ -95,11 +133,23 @@ export function createHttpServer(manager: MemoryManager) {
     return c.json(result);
   });
 
+  // Maintenance — trigger an immediate cleanup run
+  app.post('/maintenance', async (c) => {
+    if (!db) {
+      return c.json({ error: 'db not available' }, 503);
+    }
+    const { MaintenanceRunner } = await import('../db/maintenance.js');
+    const body = await c.req.json().catch(() => ({})) as { user_id?: string };
+    const runner = new MaintenanceRunner(db);
+    const result = runner.run(body.user_id);
+    return c.json(result);
+  });
+
   return app;
 }
 
-export function startHttpServer(manager: MemoryManager, port: number): void {
-  const app = createHttpServer(manager);
+export function startHttpServer(manager: MemoryManager, port: number, db?: Database.Database): void {
+  const app = createHttpServer(manager, db);
   serve({ fetch: app.fetch, port }, () => {
     console.error(`[memord] HTTP API running on http://localhost:${port}`);
     console.error(`[memord] Dashboard:  http://localhost:${port}/`);
