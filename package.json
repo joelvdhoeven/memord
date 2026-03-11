@@ -1,6 +1,6 @@
 {
   "name": "memord",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "A local shared memory layer for all your AI tools",
   "type": "module",
   "bin": {
