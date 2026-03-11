@@ -51,6 +51,14 @@ async function main() {
     runSetup();
     return;
   }
+
+  const validModes = ['mcp', 'http', 'both'];
+  if (!validModes.includes(MODE)) {
+    console.error(`[memord] Error: Unknown command '${MODE}'\n`);
+    console.log(HELP);
+    process.exit(1);
+  }
+
   console.error(`[memord] Starting (mode: ${MODE})`);
   console.error(`[memord] Database: ${DB_PATH}`);
 
