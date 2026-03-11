@@ -12,6 +12,7 @@ const HOME = homedir();
 const IS_WIN = platform() === 'win32';
 const IS_MAC = platform() === 'darwin';
 const APPDATA = process.env.APPDATA ?? join(HOME, 'AppData', 'Roaming');
+const LOCALAPPDATA = process.env.LOCALAPPDATA ?? join(HOME, 'AppData', 'Local');
 const USERNAME = process.env.USER ?? process.env.USERNAME ?? 'default';
 
 export type SetupStatus = 'configured' | 'already_set' | 'skipped' | 'error';
@@ -184,28 +185,6 @@ function injectVsCodeServers(
   }
 }
 
-// JetBrains style: uses `servers` as array
-function injectJetBrainsServers(
-  configPath: string,
-  cmd: ReturnType<typeof getMemordCommand>,
-  tool: string,
-): SetupResult {
-  if (!dirExists(join(configPath, '..'))) {
-    return { tool, path: configPath, status: 'skipped', message: 'Not installed' };
-  }
-  try {
-    const config = readJson(configPath);
-    const servers = (config.servers as Array<Record<string, unknown>>) ?? [];
-    if (servers.some(s => s.name === 'memord')) {
-      return { tool, path: configPath, status: 'already_set', message: 'Already configured' };
-    }
-    servers.push({ name: 'memord', command: cmd.command, args: cmd.args, env: { MEMORD_USER: USERNAME } });
-    writeJson(configPath, { ...config, servers });
-    return { tool, path: configPath, status: 'configured', message: 'Configured — restart IDE' };
-  } catch (e) {
-    return { tool, path: configPath, status: 'error', message: String(e) };
-  }
-}
 
 // ── Tool configurators ────────────────────────────────────────────────────
 
@@ -303,6 +282,8 @@ function setupContinue(cmd: ReturnType<typeof getMemordCommand>): SetupResult {
 }
 
 function setupZed(cmd: ReturnType<typeof getMemordCommand>): SetupResult {
+  // macOS and Linux both use ~/.config/zed/ (Zed doesn't follow ~/Library on macOS)
+  // Windows uses %APPDATA%\Zed (roaming app data)
   const path = IS_WIN
     ? join(APPDATA, 'Zed', 'settings.json')
     : join(HOME, '.config', 'zed', 'settings.json');
@@ -313,7 +294,8 @@ function setupZed(cmd: ReturnType<typeof getMemordCommand>): SetupResult {
     const config = readJson(path);
     const servers = (config.context_servers as Record<string, unknown>) ?? {};
     if (servers['memord']) return { tool: 'Zed', path, status: 'already_set', message: 'Already configured' };
-    servers['memord'] = { source: 'custom', command: cmd.command, args: cmd.args, env: { MEMORD_USER: USERNAME } };
+    // Zed context_servers: flat command/args/env at the server level
+    servers['memord'] = { command: cmd.command, args: cmd.args, env: { MEMORD_USER: USERNAME } };
     writeJson(path, { ...config, context_servers: servers });
     return { tool: 'Zed', path, status: 'configured', message: 'Configured — restart Zed' };
   } catch (e) {
@@ -322,6 +304,7 @@ function setupZed(cmd: ReturnType<typeof getMemordCommand>): SetupResult {
 }
 
 function setupJetBrains(cmd: ReturnType<typeof getMemordCommand>): SetupResult {
+  // JetBrains/Junie uses mcpServers object (same as Claude Desktop format)
   const path = join(HOME, '.junie', 'mcp', 'mcp.json');
   return injectMcpServers(path, cmd, 'JetBrains IDEs', true);
 }
@@ -380,17 +363,11 @@ function setupNeovim(cmd: ReturnType<typeof getMemordCommand>): SetupResult {
   return injectMcpServers(path, cmd, 'Neovim (mcphub.nvim)', true);
 }
 
-function setupWarp(cmd: ReturnType<typeof getMemordCommand>): SetupResult {
-  const path = IS_MAC
-    ? join(HOME, 'Library', 'Group Containers', '2BBY89MBSN.dev.warp', 'Library', 'Application Support', 'dev.warp.Warp-Stable', 'mcp', 'mcp.json')
-    : join(HOME, '.config', 'warp', 'mcp.json');
-  return injectMcpServers(path, cmd, 'Warp Terminal', true);
-}
+// Warp Terminal: MCP servers are stored in Warp Drive (cloud), not on disk.
+// Must be configured via Warp UI. See manual steps in runSetup().
 
-function setupAugment(cmd: ReturnType<typeof getMemordCommand>): SetupResult {
-  const path = join(HOME, '.augment', 'settings.json');
-  return injectMcpServers(path, cmd, 'Augment Code', true);
-}
+// Augment Code: MCP servers are configured via the VS Code extension settings panel only.
+// No file-based config exists. See manual steps in runSetup().
 
 function setupAntigravity(cmd: ReturnType<typeof getMemordCommand>): SetupResult {
   const path = join(HOME, '.gemini', 'antigravity', 'mcp_config.json');
@@ -398,11 +375,11 @@ function setupAntigravity(cmd: ReturnType<typeof getMemordCommand>): SetupResult
 }
 
 function setupAmp(cmd: ReturnType<typeof getMemordCommand>): SetupResult {
-  const base = IS_WIN ? join(APPDATA, 'Code') : IS_MAC
-    ? join(HOME, 'Library', 'Application Support', 'Code')
-    : join(HOME, '.config', 'Code');
-  const path = join(base, 'User', 'settings.json');
-  if (!dirExists(join(base, 'User'))) {
+  // Amp is a standalone tool — its global config lives at ~/.config/amp/settings.json
+  // (NOT in VS Code's settings.json — Amp is not a VS Code extension)
+  const ampDir = join(HOME, '.config', 'amp');
+  const path = join(ampDir, 'settings.json');
+  if (!dirExists(ampDir)) {
     return { tool: 'Amp', path, status: 'skipped', message: 'Not installed' };
   }
   try {
@@ -427,8 +404,9 @@ function setupAmp(cmd: ReturnType<typeof getMemordCommand>): SetupResult {
 }
 
 function setup5ire(cmd: ReturnType<typeof getMemordCommand>): SetupResult {
+  // 5ire is an Electron app — Windows uses %LOCALAPPDATA% (not roaming %APPDATA%)
   const path = IS_WIN
-    ? join(APPDATA, '5ire', 'mcp.json')
+    ? join(LOCALAPPDATA, '5ire', 'mcp.json')
     : IS_MAC
     ? join(HOME, 'Library', 'Application Support', '5ire', 'mcp.json')
     : join(HOME, '.config', '5ire', 'mcp.json');
@@ -442,14 +420,8 @@ function setupLmStudio(cmd: ReturnType<typeof getMemordCommand>): SetupResult {
   return injectMcpServers(path, cmd, 'LM Studio', true);
 }
 
-function setupCherryStudio(cmd: ReturnType<typeof getMemordCommand>): SetupResult {
-  const path = IS_WIN
-    ? join(APPDATA, 'CherryStudio', 'mcp_settings.json')
-    : IS_MAC
-    ? join(HOME, 'Library', 'Application Support', 'CherryStudio', 'mcp_settings.json')
-    : join(HOME, '.config', 'CherryStudio', 'mcp_settings.json');
-  return injectMcpServers(path, cmd, 'Cherry Studio', true);
-}
+// Cherry Studio has no file-based MCP config — servers are configured via its UI only.
+// See manual steps section in runSetup().
 
 function setupGithubCopilot(cmd: ReturnType<typeof getMemordCommand>): SetupResult {
   const path = IS_WIN
@@ -485,15 +457,16 @@ function setupWindsurfRules(): SetupResult | null {
   return writeRulesFile(join(HOME, '.codeium', 'windsurf', 'memories', 'global_rules.md'), MEMORD_RULES, 'Windsurf (global rules)');
 }
 
-// Copilot: VS Code User prompts dir — auto-loaded as .instructions.md (applyTo: **)
+// Copilot: VS Code User prompts dir — on-disk path for both prompts and instructions files
+// The UI shows "instructions" but the actual filesystem path is Code/User/prompts/
 function setupCopilotRules(): SetupResult | null {
   const base = IS_WIN ? join(APPDATA, 'Code') : IS_MAC
     ? join(HOME, 'Library', 'Application Support', 'Code')
     : join(HOME, '.config', 'Code');
   if (!dirExists(join(base, 'User'))) return null;
-  const promptsPath = join(base, 'User', 'prompts', 'memord.instructions.md');
+  const instructionsPath = join(base, 'User', 'prompts', 'memord.instructions.md');
   const content = `---\napplyTo: "**"\n---\n\n${MEMORD_RULES}`;
-  return writeRulesFile(promptsPath, content, 'Copilot (instructions)');
+  return writeRulesFile(instructionsPath, content, 'Copilot (instructions)');
 }
 
 // Continue: ~/.continue/rules/memord.md (alwaysApply: true)
@@ -504,12 +477,13 @@ function setupContinueRules(): SetupResult | null {
 }
 
 // Cline: ~/Documents/Cline/Rules/memord.md (global, no frontmatter needed)
+// Official Cline docs: ~/Documents/Cline/Rules on Windows, macOS, AND Linux (primary)
 function setupClineRules(): SetupResult | null {
   const base = IS_WIN ? join(APPDATA, 'Code') : IS_MAC
     ? join(HOME, 'Library', 'Application Support', 'Code')
     : join(HOME, '.config', 'Code');
   if (!dirExists(join(base, 'User', 'globalStorage', 'saoudrizwan.claude-dev'))) return null;
-  const rulesDir = IS_WIN || IS_MAC ? join(HOME, 'Documents', 'Cline', 'Rules') : join(HOME, 'Cline', 'Rules');
+  const rulesDir = join(HOME, 'Documents', 'Cline', 'Rules');
   return writeRulesFile(join(rulesDir, 'memord.md'), MEMORD_RULES, 'Cline (global rules)');
 }
 
@@ -563,8 +537,6 @@ export function runSetup(): void {
     setupAmazonQ,
     setupAmp,
     setupAntigravity,
-    setupAugment,
-    setupCherryStudio,
     setupClaudeCode,
     setupClaudeDesktop,
     setupCline,
@@ -582,7 +554,6 @@ export function runSetup(): void {
     setupRooCode,
     setupVisualStudio,
     setupVsCode,
-    setupWarp,
     setupWindsurf,
     setupZed,
   ];
@@ -639,11 +610,11 @@ export function runSetup(): void {
 
   // Manual steps for GUI-only tools
   console.log('\n── Manual steps needed for some tools ───────────────');
-  console.log('  Zed          — Agent Panel → Rules → create rule → click 📎 for default');
-  console.log('  Warp         — Add to AGENTS.md in project root, or Warp Drive → Rules');
+  console.log('  Warp         — Settings → AI → MCP Servers → Add Server (stored in Warp Drive)');
+  console.log('  Augment      — VS Code: Extensions → Augment → Settings → MCP Servers → Add');
+  console.log('  Cherry Studio — Settings → MCP Server → Add Server');
   console.log('  5ire         — Create a folder → set System Message on it');
   console.log('  LM Studio    — Save system prompt as a Preset, select it each session');
-  console.log('  Cherry Studio — Edit Default Assistant → set system prompt');
   console.log(`\n  Paste this into those tools:\n`);
   console.log('  > Call remember() automatically when you learn user preferences,');
   console.log('  > project decisions, or constraints. Call recall() at session start.');
