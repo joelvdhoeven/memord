@@ -1,6 +1,6 @@
 {
   "name": "memord",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "A local shared memory layer for all your AI tools",
   "type": "module",
   "bin": {
@@ -10,6 +10,14 @@
     "dist/",
     "README.md"
   ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joelvdhoeven/memord"
+  },
+  "homepage": "https://github.com/joelvdhoeven/memord#readme",
+  "bugs": {
+    "url": "https://github.com/joelvdhoeven/memord/issues"
+  },
   "engines": {
     "node": ">=18"
   },
