@@ -96,18 +96,22 @@ Restart your AI tools and Memord is active.
 
 ## Quick Demo
 
+After running setup, your AI tools call `remember()` and `recall()` automatically via MCP. You can also interact with Memord directly:
+
 ```bash
-# Check that Memord is running
-npx memord status
+# Browse your memory store in the browser
+npx memord http
+# → opens dashboard at http://localhost:7432
 
-# Search your memory store from the terminal
-npx memord search "typescript preferences"
-
-# View recent memories
-npx memord list
+# Or start both MCP + HTTP together
+npx memord both
 ```
 
-Or just use your AI tool — it will call `remember()` and `recall()` automatically via MCP.
+Ask your AI tool at the start of any session:
+```
+What do you know about me and my projects?
+```
+It will call `recall()` and load your stored context automatically.
 
 ---
 
