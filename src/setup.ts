@@ -78,6 +78,42 @@ function dirExists(path: string): boolean {
   try { return existsSync(path); } catch { return false; }
 }
 
+// ── Memory rules — shared instruction text injected into every tool ────────
+
+const MEMORD_RULES = `## Memord Memory Instructions
+
+You have access to the memord MCP server with \`remember\` and \`recall\` tools.
+
+Call \`remember\` automatically — without being asked — when you learn:
+- A user preference (coding style, library choices, workflow, naming conventions)
+- A project architectural decision or technology choice
+- A constraint ("never use X", "always prefer Y")
+- A project goal, deadline, or scope decision
+- Anything the user explicitly asks to remember
+
+Do NOT call \`remember\` for transient task details or info derivable from the code.
+
+Call \`remember\` silently — no announcement, no permission needed.
+Call \`recall\` at the start of each new task to load relevant context first.
+`;
+
+function writeRulesFile(rulesPath: string, content: string, tool: string): SetupResult {
+  try {
+    if (existsSync(rulesPath)) {
+      const existing = readFileSync(rulesPath, 'utf-8');
+      if (existing.includes('memord') || existing.includes('Memord')) {
+        return { tool, path: rulesPath, status: 'already_set', message: 'Memory rules already present' };
+      }
+      writeFile(rulesPath, existing.trimEnd() + '\n\n' + content);
+    } else {
+      writeFile(rulesPath, content);
+    }
+    return { tool, path: rulesPath, status: 'configured', message: 'Memory rules written' };
+  } catch (e) {
+    return { tool, path: rulesPath, status: 'error', message: String(e) };
+  }
+}
+
 // Standard mcpServers entry (most tools)
 function mcpEntry(cmd: ReturnType<typeof getMemordCommand>) {
   return { command: cmd.command, args: cmd.args, env: { MEMORD_USER: USERNAME } };
@@ -434,6 +470,85 @@ function setupGeminiCodeAssist(cmd: ReturnType<typeof getMemordCommand>): SetupR
   return injectMcpServers(path, cmd, 'Gemini Code Assist', true);
 }
 
+// ── Rules-file configurators (write memory instruction into each tool) ─────
+
+// Cursor: ~/.cursor/rules/memord.mdc (alwaysApply, MDC format)
+function setupCursorRules(): SetupResult | null {
+  if (!dirExists(join(HOME, '.cursor'))) return null;
+  const content = `---\ndescription: Proactively call remember() to persist context across sessions\nalwaysApply: true\n---\n\n${MEMORD_RULES}`;
+  return writeRulesFile(join(HOME, '.cursor', 'rules', 'memord.mdc'), content, 'Cursor (rules)');
+}
+
+// Windsurf: ~/.codeium/windsurf/memories/global_rules.md (global, always injected)
+function setupWindsurfRules(): SetupResult | null {
+  if (!dirExists(join(HOME, '.codeium', 'windsurf'))) return null;
+  return writeRulesFile(join(HOME, '.codeium', 'windsurf', 'memories', 'global_rules.md'), MEMORD_RULES, 'Windsurf (global rules)');
+}
+
+// Copilot: VS Code User prompts dir — auto-loaded as .instructions.md (applyTo: **)
+function setupCopilotRules(): SetupResult | null {
+  const base = IS_WIN ? join(APPDATA, 'Code') : IS_MAC
+    ? join(HOME, 'Library', 'Application Support', 'Code')
+    : join(HOME, '.config', 'Code');
+  if (!dirExists(join(base, 'User'))) return null;
+  const promptsPath = join(base, 'User', 'prompts', 'memord.instructions.md');
+  const content = `---\napplyTo: "**"\n---\n\n${MEMORD_RULES}`;
+  return writeRulesFile(promptsPath, content, 'Copilot (instructions)');
+}
+
+// Continue: ~/.continue/rules/memord.md (alwaysApply: true)
+function setupContinueRules(): SetupResult | null {
+  if (!dirExists(join(HOME, '.continue'))) return null;
+  const content = `---\nalwaysApply: true\n---\n\n${MEMORD_RULES}`;
+  return writeRulesFile(join(HOME, '.continue', 'rules', 'memord.md'), content, 'Continue (rules)');
+}
+
+// Cline: ~/Documents/Cline/Rules/memord.md (global, no frontmatter needed)
+function setupClineRules(): SetupResult | null {
+  const base = IS_WIN ? join(APPDATA, 'Code') : IS_MAC
+    ? join(HOME, 'Library', 'Application Support', 'Code')
+    : join(HOME, '.config', 'Code');
+  if (!dirExists(join(base, 'User', 'globalStorage', 'saoudrizwan.claude-dev'))) return null;
+  const rulesDir = IS_WIN || IS_MAC ? join(HOME, 'Documents', 'Cline', 'Rules') : join(HOME, 'Cline', 'Rules');
+  return writeRulesFile(join(rulesDir, 'memord.md'), MEMORD_RULES, 'Cline (global rules)');
+}
+
+// Kiro: ~/.kiro/steering/memord.md (inclusion: always, global)
+function setupKiroRules(): SetupResult | null {
+  if (!dirExists(join(HOME, '.kiro'))) return null;
+  const content = `---\ninclusion: always\n---\n\n${MEMORD_RULES}`;
+  return writeRulesFile(join(HOME, '.kiro', 'steering', 'memord.md'), content, 'Kiro (steering)');
+}
+
+// Amp: ~/.config/amp/AGENTS.md (global AGENTS.md, auto-loaded)
+function setupAmpRules(): SetupResult | null {
+  const ampDir = join(HOME, '.config', 'amp');
+  if (!dirExists(ampDir)) return null;
+  return writeRulesFile(join(ampDir, 'AGENTS.md'), MEMORD_RULES, 'Amp (AGENTS.md)');
+}
+
+// Gemini CLI / Code Assist: ~/.gemini/GEMINI.md (global, auto-loaded)
+function setupGeminiRules(): SetupResult | null {
+  if (!dirExists(join(HOME, '.gemini'))) return null;
+  return writeRulesFile(join(HOME, '.gemini', 'GEMINI.md'), MEMORD_RULES, 'Gemini (GEMINI.md)');
+}
+
+// Goose: ~/.config/goose/.goosehints (global, loaded by developer extension)
+function setupGooseRules(): SetupResult | null {
+  const configDir = IS_WIN
+    ? join(APPDATA, 'Block', 'goose', 'config')
+    : join(HOME, '.config', 'goose');
+  if (!dirExists(configDir)) return null;
+  return writeRulesFile(join(configDir, '.goosehints'), MEMORD_RULES, 'Goose (.goosehints)');
+}
+
+// JetBrains: .aiassistant/rules/memord.md — per-project, write to home as template
+function setupJetBrainsRules(): SetupResult | null {
+  if (!dirExists(join(HOME, '.junie'))) return null;
+  // Write to ~/.aiassistant/rules/ as a global template users can copy to projects
+  return writeRulesFile(join(HOME, '.aiassistant', 'rules', 'memord.md'), MEMORD_RULES, 'JetBrains (rules template)');
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────
 
 export function runSetup(): void {
@@ -442,7 +557,8 @@ export function runSetup(): void {
   console.log('\n🧠 memord setup\n');
   console.log(`Command: ${cmd.command} ${cmd.args.join(' ')}\n`);
 
-  const configurators = [
+  // Phase 1 — MCP server config (tells each tool how to connect to memord)
+  const mcpConfigurators = [
     setup5ire,
     setupAmazonQ,
     setupAmp,
@@ -471,7 +587,21 @@ export function runSetup(): void {
     setupZed,
   ];
 
-  const results = configurators.map(fn => fn(cmd));
+  const mcpResults = mcpConfigurators.map(fn => fn(cmd));
+
+  // Phase 2 — Memory rules (tells each tool's LLM to call remember() proactively)
+  const rulesResults: SetupResult[] = [
+    setupCursorRules(),
+    setupWindsurfRules(),
+    setupCopilotRules(),
+    setupContinueRules(),
+    setupClineRules(),
+    setupKiroRules(),
+    setupAmpRules(),
+    setupGeminiRules(),
+    setupGooseRules(),
+    setupJetBrainsRules(),
+  ].filter((r): r is SetupResult => r !== null);
 
   const icons: Record<SetupStatus, string> = {
     configured:  '✅',
@@ -480,11 +610,13 @@ export function runSetup(): void {
     error:       '❌',
   };
 
-  const active = results.filter(r => r.status !== 'skipped');
-  const skipped = results.filter(r => r.status === 'skipped');
+  // Print MCP results
+  console.log('── MCP configuration ────────────────────────────────');
+  const active = mcpResults.filter(r => r.status !== 'skipped');
+  const skipped = mcpResults.filter(r => r.status === 'skipped');
 
   for (const r of active) {
-    console.log(`${icons[r.status]} ${r.tool.padEnd(20)} ${r.message}`);
+    console.log(`${icons[r.status]} ${r.tool.padEnd(22)} ${r.message}`);
     if (r.status === 'configured' || r.status === 'already_set') {
       console.log(`   ${r.path}`);
     }
@@ -494,10 +626,34 @@ export function runSetup(): void {
     console.log(`\n— Not installed (${skipped.length}): ${skipped.map(r => r.tool).join(', ')}`);
   }
 
-  const configured = results.filter(r => r.status === 'configured').length;
-  console.log(`\n${configured} tool(s) newly configured.\n`);
+  // Print rules results
+  if (rulesResults.length > 0) {
+    console.log('\n── Memory rules (proactive remember() instructions) ─');
+    for (const r of rulesResults) {
+      console.log(`${icons[r.status]} ${r.tool.padEnd(22)} ${r.message}`);
+      if (r.status === 'configured' || r.status === 'already_set') {
+        console.log(`   ${r.path}`);
+      }
+    }
+  }
 
-  if (configured > 0) {
+  // Manual steps for GUI-only tools
+  console.log('\n── Manual steps needed for some tools ───────────────');
+  console.log('  Zed          — Agent Panel → Rules → create rule → click 📎 for default');
+  console.log('  Warp         — Add to AGENTS.md in project root, or Warp Drive → Rules');
+  console.log('  5ire         — Create a folder → set System Message on it');
+  console.log('  LM Studio    — Save system prompt as a Preset, select it each session');
+  console.log('  Cherry Studio — Edit Default Assistant → set system prompt');
+  console.log(`\n  Paste this into those tools:\n`);
+  console.log('  > Call remember() automatically when you learn user preferences,');
+  console.log('  > project decisions, or constraints. Call recall() at session start.');
+  console.log('  > Use the memord MCP server. No announcement needed.\n');
+
+  const mcpConfigured = mcpResults.filter(r => r.status === 'configured').length;
+  const rulesConfigured = rulesResults.filter(r => r.status === 'configured').length;
+  console.log(`${mcpConfigured} MCP config(s) written, ${rulesConfigured} rules file(s) written.\n`);
+
+  if (mcpConfigured > 0 || rulesConfigured > 0) {
     console.log('Restart the configured tools, then ask:');
     console.log('  "What do you know about me?"\n');
   }
